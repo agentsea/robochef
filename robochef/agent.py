@@ -15,9 +15,8 @@ from surfkit.agent import TaskAgent
 from taskara import Task, TaskStatus
 from tenacity import before_sleep_log, retry, stop_after_attempt
 from threadmem import RoleMessage, RoleThread
-from toolfuse.util import AgentUtils
 
-from .tool import SemanticDesktop, router
+from .tool import RoboChefTool, router
 
 logging.basicConfig(level=logging.INFO)
 logger: Final = logging.getLogger(__name__)
@@ -26,12 +25,12 @@ logger.setLevel(int(os.getenv("LOG_LEVEL", str(logging.DEBUG))))
 console = Console(force_terminal=True)
 
 
-class SurfPizzaConfig(BaseModel):
+class RoboChefConfig(BaseModel):
     pass
 
 
-class SurfPizza(TaskAgent):
-    """A GUI desktop agent that slices up the image"""
+class RoboChef(TaskAgent):
+    """An AI agent that finds recipes and does other recipes-related tasks"""
 
     def solve_task(
         self,
@@ -43,7 +42,6 @@ class SurfPizza(TaskAgent):
 
         Args:
             task (Task): Task to solve.
-            device (Device): Device to perform the task on.
             max_steps (int, optional): Max steps to try and solve. Defaults to 30.
 
         Returns:
@@ -58,42 +56,11 @@ class SurfPizza(TaskAgent):
         task.ensure_thread("debug")
         task.post_message("assistant", "I'll post debug messages here", thread="debug")
 
-        # Check that the device we received is one we support
-        if not isinstance(device, Desktop):
-            raise ValueError("Only desktop devices supported")
+        # Create an instance of the RoboChef tool
+        robochef = RoboChefTool(task=task)
 
-        # Wrap the standard desktop in our special tool
-        semdesk = SemanticDesktop(task=task, desktop=device)
-
-        # Add standard agent utils to the device
-        semdesk.merge(AgentUtils())
-
-        # Open a site if present in the parameters
-        site = task._parameters.get("site") if task._parameters else None
-        if site:
-            console.print(f"▶️ opening site url: {site}", style="blue")
-            task.post_message("assistant", f"opening site url {site}...")
-            semdesk.desktop.open_url(site)
-            console.print("waiting for browser to open...", style="blue")
-            time.sleep(5)
-
-        # Get info about the desktop
-        info = semdesk.desktop.info()
-        screen_size = info["screen_size"]
-        console.print(f"Desktop info: {screen_size}")
-
-        # Get the json schema for the tools, excluding actions that aren't useful
-        tools = semdesk.json_schema(
-            exclude_names=[
-                "move_mouse",
-                "click",
-                "drag_mouse",
-                "mouse_coordinates",
-                "take_screenshot",
-                "open_url",
-                "double_click",
-            ]
-        )
+        # Get the json schema for the tool
+        tools = robochef.json_schema()
         console.print("tools: ", style="purple")
         console.print(JSON.from_data(tools))
 
@@ -102,23 +69,26 @@ class SurfPizza(TaskAgent):
         thread.post(
             role="user",
             msg=(
-                "You are an AI assistant which uses a devices to accomplish tasks. "
+                "You are a helpful AI assistant which performs recipes related tasks. "
                 f"Your current task is {task.description}, and your available tools are {tools} "
-                "For each screenshot I will send you please return the result chosen action as  "
-                f"raw JSON adhearing to the schema {V1ActionSelection.model_json_schema()} "
-                "Let me know when you are ready and I'll send you the first screenshot"
+                "For each task I send you please return a raw JSON adhering to the following schema and with the correct action called."
+                f"Schema: {V1ActionSelection.model_json_schema()} "
+                "Let me know when you are ready and I'll send you the first task."
             ),
         )
         response = router.chat(thread, namespace="system")
         console.print(f"system prompt response: {response}", style="blue")
         thread.add_msg(response.msg)
 
+        # The initial state is the task description itself.
+        current_state = task.description
+
         # Loop to run actions
         for i in range(max_steps):
             console.print(f"-------step {i + 1}", style="green")
 
             try:
-                thread, done = self.take_action(semdesk, task, thread)
+                thread, current_state, done = self.take_action(robochef, task, thread, current_state)
             except Exception as e:
                 console.print(f"Error: {e}", style="red")
                 task.status = TaskStatus.FAILED
@@ -141,19 +111,20 @@ class SurfPizza(TaskAgent):
         return task
 
     @retry(
-        stop=stop_after_attempt(5),
+        stop=stop_after_attempt(1),
         before_sleep=before_sleep_log(logger, logging.INFO),
     )
     def take_action(
         self,
-        semdesk: SemanticDesktop,
+        robocheftool: RoboChefTool,
         task: Task,
         thread: RoleThread,
-    ) -> Tuple[RoleThread, bool]:
+        current_state: dict,
+    ) -> Tuple[RoleThread, dict, bool]:
         """Take an action
 
         Args:
-            desktop (SemanticDesktop): Desktop to use
+            robocheftool (RoboChefTool): Robo Chef tool
             task (str): Task to accomplish
             thread (RoleThread): Role thread for the task
 
@@ -173,7 +144,7 @@ class SurfPizza(TaskAgent):
                 if task.status == TaskStatus.CANCELING:
                     task.status = TaskStatus.CANCELED
                     task.save()
-                return thread, True
+                return thread, current_state, True
 
             console.print("taking action...", style="white")
 
@@ -181,28 +152,14 @@ class SurfPizza(TaskAgent):
             _thread = thread.copy()
             _thread.remove_images()
 
-            # Take a screenshot of the desktop and post a message with it
-            screenshot_img = semdesk.desktop.take_screenshots()[0]
-            console.print(f"screenshot img type: {type(screenshot_img)}")
-            task.post_message(
-                "assistant",
-                "current image",
-                images=[screenshot_img],
-                thread="debug",
-            )
-
-            # Get the current mouse coordinates
-            x, y = semdesk.desktop.mouse_coordinates()
-            console.print(f"mouse coordinates: ({x}, {y})", style="white")
-
             # Craft the message asking the MLLM for an action
             msg = RoleMessage(
                 role="user",
                 text=(
-                    "Here is a screenshot of the current desktop, please select an action from the provided schema."
+                    f"Your current task is {current_state}."
+                    "Please select an action from the provided schema."
                     "Please return just the raw JSON"
-                ),
-                images=[screenshot_img],
+                )
             )
             _thread.add_msg(msg)
 
@@ -216,7 +173,7 @@ class SurfPizza(TaskAgent):
             task.add_prompt(response.prompt)
 
             try:
-                # Post to the user letting them know what the modle selected
+                # Post to the user letting them know what the model selected
                 selection = response.parsed
                 if not selection:
                     raise ValueError("No action selection parsed")
@@ -245,10 +202,10 @@ class SurfPizza(TaskAgent):
                 )
                 task.status = TaskStatus.FINISHED
                 task.save()
-                return _thread, True
+                return _thread, current_state, True
 
             # Find the selected action in the tool
-            action = semdesk.find_action(selection.action.name)
+            action = robocheftool.find_action(selection.action.name)
             console.print(f"found action: {action}", style="blue")
             if not action:
                 console.print(f"action returned not found: {selection.action.name}")
@@ -256,7 +213,7 @@ class SurfPizza(TaskAgent):
 
             # Take the selected action
             try:
-                action_response = semdesk.use(action, **selection.action.parameters)
+                action_response = robocheftool.use(action, **selection.action.parameters)
             except Exception as e:
                 raise ValueError(f"Trouble using action: {e}")
 
@@ -268,17 +225,18 @@ class SurfPizza(TaskAgent):
 
             # Record the action for feedback and tuning
             task.record_action(
-                state=EnvState(images=[screenshot_img]),
+                state=EnvState(),
                 prompt=response.prompt,
                 action=selection.action,
-                tool=semdesk.ref(),
+                tool=robocheftool.ref(),
                 result=action_response,
                 agent_id=self.name(),
                 model=response.model,
             )
 
             _thread.add_msg(response.msg)
-            return _thread, False
+            new_state = action_response
+            return _thread, new_state, False
 
         except Exception as e:
             console.print("Exception taking action: ", e)
@@ -296,34 +254,34 @@ class SurfPizza(TaskAgent):
         return [Desktop]
 
     @classmethod
-    def config_type(cls) -> Type[SurfPizzaConfig]:
+    def config_type(cls) -> Type[RoboChefConfig]:
         """Type of config
 
         Returns:
-            Type[SurfPizzaConfig]: Config type
+            Type[RoboChefConfig]: Config type
         """
-        return SurfPizzaConfig
+        return RoboChefConfig
 
     @classmethod
-    def from_config(cls, config: SurfPizzaConfig) -> "SurfPizza":
+    def from_config(cls, config: RoboChefConfig) -> "RoboChef":
         """Create an agent from a config
 
         Args:
-            config (SurfPizzaConfig): Agent config
+            config (RoboChefConfig): Agent config
 
         Returns:
-            SurfPizza: The agent
+            RoboChef: The agent
         """
-        return SurfPizza()
+        return RoboChef()
 
     @classmethod
-    def default(cls) -> "SurfPizza":
+    def default(cls) -> "RoboChef":
         """Create a default agent
 
         Returns:
-            SurfPizza: The agent
+            RoboChef: The agent
         """
-        return SurfPizza()
+        return RoboChef()
 
     @classmethod
     def init(cls) -> None:
@@ -331,4 +289,4 @@ class SurfPizza(TaskAgent):
         return
 
 
-Agent = SurfPizza
+Agent = RoboChef
