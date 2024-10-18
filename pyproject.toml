@@ -1,12 +1,12 @@
 
 [tool.poetry]
-name = "SurfPizza"
+name = "RoboChef"
 version = "0.1.0"
-description = "AI agent for A GUI surfer which uses coordinate dots for grounding"
-authors = ["Patrick Barker <patrickbarkerco@gmail.com>"]
+description = "AI agent which understands your recipes-related requirements and performs tasks"
+authors = ["Patrick Barker <patrickbarkerco@gmail.com>", "Tapa Dipti Sitaula <tapadipti@gmail.com>"]
 license = "MIT"
 readme = "README.md"
-packages = [{include = "surfpizza"}]
+packages = [{include = "robochef"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
