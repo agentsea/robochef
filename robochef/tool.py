@@ -1,25 +1,18 @@
-import hashlib
 import logging
 import os
-import time
-from typing import List, Optional, Tuple
+import json
+from typing import List, Dict, Union
 
 import requests
-from agentdesk.device_v1 import Desktop
-from mllm import RoleMessage, RoleThread, Router
-from PIL import Image, ImageDraw
-from pydantic import BaseModel, Field
+from mllm import RoleThread, Router
+from PIL import Image
 from rich.console import Console
-from rich.json import JSON
 from taskara import Task
 from toolfuse import Tool, action
 
-from .img import (
-    Box,
-    b64_to_image,
-    divide_image_into_cells,
-    image_to_b64,
-)
+from .prompts import recipe_req_analyzer_prompt, \
+                        conversion_analyzer_prompt, \
+                        substitution_analyzer_prompt
 
 router = Router.from_env()
 console = Console()
@@ -27,23 +20,25 @@ console = Console()
 logger = logging.getLogger(__name__)
 logger.setLevel(int(os.getenv("LOG_LEVEL", logging.DEBUG)))
 
+SPOONACULAR_API_KEY = os.environ['SPOONACULAR_API_KEY']
+if not SPOONACULAR_API_KEY:
+    print ("Please set your SPOONACULAR_API_KEY first.")
+    raise
 
-class SemanticDesktop(Tool):
+class RoboChefTool(Tool):
     """A semantic desktop replaces click actions with semantic description rather than coordinates"""
 
     def __init__(
-        self, task: Task, desktop: Desktop, data_path: str = "./.data"
+        self, task: Task, data_path: str = "./.data"
     ) -> None:
         """
-        Initialize and open a URL in the application.
+        Initialize the tool.
 
         Args:
             task: Agent task. Defaults to None.
-            desktop: Desktop instance to wrap.
             data_path (str, optional): Path to data. Defaults to "./.data".
         """
-        super().__init__(wraps=desktop)
-        self.desktop = desktop
+        super().__init__()
 
         self.data_path = data_path
         self.img_path = os.path.join(self.data_path, "images", task.id)
@@ -52,220 +47,165 @@ class SemanticDesktop(Tool):
         self.task = task
 
     @action
-    def click_object(self, description: str, type: str, button: str = "left") -> None:
-        """Click on an object on the screen
-
-        Args:
-            description (str): The description of the object including its general location, for example
-                "a round dark blue icon with the text 'Home' in the top-right of the image", please be a generic as possible
-            type (str): Type of click, can be 'single' for a single click or
-                'double' for a double click. If you need to launch an application from the desktop choose 'double'
-            button (str, optional): Mouse button to click. Options are 'left' or 'right'. Defaults to 'left'.
+    def get_recipe_requirements(self, requirements: str) -> Dict[str, Union[str, List[str]]]:
         """
-        if type != "single" and type != "double":
-            raise ValueError("type must be 'single' or 'double'")
-
-        logging.debug("clicking icon with description ", description)
-
-        max_depth = int(os.getenv("MAX_DEPTH", 3))
-        color_text = os.getenv("COLOR_TEXT", "yellow")
-        color_circle = os.getenv("COLOR_CIRCLE", "red")
-        num_cells = int(os.getenv("NUM_CELLS", 3))
-
-        click_hash = hashlib.md5(description.encode()).hexdigest()[:5]
-
-        class ZoomSelection(BaseModel):
-            """Zoom selection model"""
-
-            number: int = Field(
-                ...,
-                description="Number of the cell containing the element we wish to select",
-            )
-
-        current_img = self.desktop.take_screenshots()[0]
-        original_img = current_img.copy()
-        img_width, img_height = current_img.size
-
-        initial_box = Box(0, 0, img_width, img_height)
-        bounding_boxes = [initial_box]
-
+        This is the first step in finding a recipe. It takes a text describing what type of recipe the user wants and returns a structured breakdown of user requirements. The structured breakdown clarifies the food, diet, intolerances, include_ingredients and exclude_ingredients that the user wants in the recipe. This breakdown can then be used to search for suitable recipes.
+        """
         thread = RoleThread()
+        router = Router(preference=["gpt-4-turbo"])
 
-        self.task.post_message(
-            role="assistant",
-            msg=f"Clicking '{type}' on object '{description}'",
-            thread="debug",
-            images=[image_to_b64(current_img)],
-        )
+        analyzer_msg = f"{recipe_req_analyzer_prompt} Here is the user requirement in plain English: {requirements}"
+        thread.post(role="user", msg=analyzer_msg)
 
-        for i in range(max_depth):
-            logger.info(f"zoom depth {i}")
-            current_img.save(
-                os.path.join(self.img_path, f"{click_hash}_current_{i}.png")
-            )
+        response = router.chat(thread)
+        requirements_breakdown = json.loads(response.msg.text)
 
-            screenshot_b64 = image_to_b64(current_img)
-            self.task.post_message(
-                role="assistant",
-                msg=f"Zooming into image with depth {i}",
-                thread="debug",
-                images=[screenshot_b64],
-            )
+        return {
+            "food": requirements_breakdown["food"],
+            "diet": requirements_breakdown["diet"],
+            "intolerances": requirements_breakdown["intolerances"],
+            "include_ingredients": requirements_breakdown["include_ingredients"],
+            "exclude_ingredients": requirements_breakdown["exclude_ingredients"],
+        }
 
-            # -- If you want dots
-            # current_dim = current_img.size
-            # grid_img = create_grid_image_by_num_cells(
-            #     image_width=current_dim[0],
-            #     image_height=current_dim[1],
-            #     color_circle=color_circle,
-            #     color_text=color_text,
-            #     num_cells=4,
-            # )
-            # merged_image = superimpose_images(current_img.copy(), grid_img)
-            # merged_image_b64 = image_to_b64(merged_image)
-
-            composite, cropped_imgs, boxes = divide_image_into_cells(
-                current_img, num_cells=num_cells
-            )
-            debug_img = self._debug_image(current_img.copy(), boxes)
-
-            self.task.post_message(
-                role="assistant",
-                msg=f"Composite for depth {i}",
-                thread="debug",
-                images=[image_to_b64(composite)],
-            )
-            composite.save(os.path.join(self.img_path, f"{click_hash}_merged_{i}.png"))
-            composite_b64 = image_to_b64(composite)
-
-            prompt = (
-                "You are an experienced AI trained to find the elements on the screen."
-                "I am going to send you two images, the first image is a screenshot of the web application, and on the "
-                "second image I have taken the same screenshot sliced it into cells with a number next to each cell "
-                "to help you to find required elements. "
-                f"Please select the number of the cell which contains '{description}' "
-                f"Please return you response as raw JSON following the schema {ZoomSelection.model_json_schema()} "
-                "Be concise and only return the raw json, for example if the image you wanted to select had a number 3 next to it "
-                'you would return {"number": 3}'
-            )
-            msg = RoleMessage(
-                role="user",
-                text=prompt,
-                images=[screenshot_b64, composite_b64],
-            )
-            thread.add_msg(msg)
-
-            response = router.chat(
-                thread, namespace="zoom", expect=ZoomSelection, agent_id="SurfPizza"
-            )
-            if not response.parsed:
-                raise SystemError("No response parsed from zoom")
-
-            logger.info(f"zoom response {response}")
-
-            self.task.add_prompt(response.prompt)
-
-            zoom_resp = response.parsed
-            self.task.post_message(
-                role="assistant",
-                msg=f"Selection {zoom_resp.model_dump_json()}",
-                thread="debug",
-            )
-            console.print(JSON(zoom_resp.model_dump_json()))
-
-            current_img = cropped_imgs[zoom_resp.number]
-            current_box = boxes[zoom_resp.number]
-            absolute_box = current_box.to_absolute(bounding_boxes[-1])
-            bounding_boxes.append(absolute_box)
-
-        click_x, click_y = bounding_boxes[-1].center()
-        logger.info(f"clicking exact coords {click_x}, {click_y}")
-        self.task.post_message(
-            role="assistant",
-            msg=f"Clicking coordinates {click_x}, {click_y}",
-            thread="debug",
-        )
-
-        debug_img = self._debug_image(
-            original_img.copy(), bounding_boxes, (click_x, click_y)
-        )
-        self.task.post_message(
-            role="assistant",
-            msg="Final debug img",
-            thread="debug",
-            images=[image_to_b64(debug_img)],
-        )
-        self._click_coords(x=click_x, y=click_y, type=type, button=button)
-        return
-
-    def _click_coords(
-        self, x: int, y: int, type: str = "single", button: str = "left"
-    ) -> None:
-        """Click mouse button
-
-        Args:
-            x (Optional[int], optional): X coordinate to move to, if not provided
-                it will click on current location. Defaults to None.
-            y (Optional[int], optional): Y coordinate to move to, if not provided
-                it will click on current location. Defaults to None.
-            type (str, optional): Type of click, can be single or double. Defaults to "single".
-            button (str, optional): Button to click. Defaults to "left".
+    @action
+    def search_recipe(self, requirements_breakdown: Dict[str, str]) -> str:
         """
-        # TODO: fix click cords in agentd
-        logging.debug("moving mouse")
-        body = {"x": int(x), "y": int(y)}
-        resp = requests.post(f"{self.desktop.base_url}/v1/move_mouse", json=body)
-        resp.raise_for_status()
-        time.sleep(2)
+        Searches for a recipe that meet the user's requirements. The user's requirements are provided as a structured dictionary with the following keys: food, diet, intolerances, include_ingredients, exclude_ingredients. Using this dictionary, this method queries the spoonacular recipe search api and returns the ID of a recipe that meets the requirements.
+        """
+        params = {'apiKey': SPOONACULAR_API_KEY, 'number': 1}
+        if requirements_breakdown['food']: params['query'] = requirements_breakdown['food']
+        if requirements_breakdown['diet']: params['diet'] = requirements_breakdown['diet']
+        if requirements_breakdown['intolerances']:
+            if type(requirements_breakdown['intolerances']) == list:
+                params['intolerances'] = ','.join(requirements_breakdown['intolerances'])
+            else:
+                params['intolerances'] = requirements_breakdown['intolerances']
+        if requirements_breakdown['include_ingredients']:
+            if type(requirements_breakdown['include_ingredients']) == list:
+                params['includeIngredients'] = ','.join(requirements_breakdown['include_ingredients'])
+            else:
+                params['includeIngredients'] =requirements_breakdown['include_ingredients']
+        if requirements_breakdown['exclude_ingredients']:
+            if type(requirements_breakdown['exclude_ingredients']) == list:
+                params['excludeIngredients'] = ','.join(requirements_breakdown['exclude_ingredients'])
+            else:
+                params['excludeIngredients'] =requirements_breakdown['exclude_ingredients']
 
-        if type == "single":
-            logging.debug("clicking")
-            resp = requests.post(
-                f"{self.desktop.base_url}/v1/click", json={"button": button}
-            )
-            resp.raise_for_status()
-            time.sleep(2)
-        elif type == "double":
-            logging.debug("double clicking")
-            resp = requests.post(
-                f"{self.desktop.base_url}/v1/double_click", json={"button": button}
-            )
-            resp.raise_for_status()
-            time.sleep(2)
+        search_recipe_api_url = "https://api.spoonacular.com/recipes/complexSearch"
+        response = requests.get(search_recipe_api_url, params=params)
+        if response.status_code != 200:
+            raise Exception("Error searching recipes on Spoonacular")
+        recipe = json.loads(response.text)
+        recipe_id = recipe['results'][0]['id']
+        return recipe_id
+
+    @action
+    def get_recipe_details(self, recipe_id: str) -> str:
+        """
+        Fetches the details of a recipe identified by the given recipe ID. The fetched details are contained in an image hosted in a recipe_card_url. Later, the recipe_card_url can be shown to the user.
+        """
+        params = {'apiKey': SPOONACULAR_API_KEY}
+        get_recipe_card_api_url = f"https://api.spoonacular.com/recipes/{recipe_id}/card"
+        recipe_card_response = requests.get(get_recipe_card_api_url, params=params)
+        if recipe_card_response.status_code != 200:
+            raise Exception("Error getting recipe card from Spoonacular")
+        recipe_card = json.loads(recipe_card_response.text)
+        recipe_card_url = recipe_card['url']
+        return recipe_card_url
+
+    @action
+    def display_recipe_details(self, recipe_card_url: str) -> None:
+        """Displays the details of a recipe using a recipe card available in the specified recipe_card_url."""
+        img_content = requests.get(recipe_card_url, stream=True)
+        if img_content.status_code != 200:
+            raise Exception("Error loading recipe card image")
+        img = Image.open(img_content.raw)
+        img.show()
+        return "Task Complete"
+
+    @action
+    def get_conversion_requirements(self, requirements: str) -> Dict[str, Union[str, List[str]]]:
+        """
+        Transforms the user request to covert ingredients from one unit to another from a plain English format to a structured format. It takes a text describing what the uer is trying to convert and returns a structured breakdown that clarifies the ingredient name, source amount, source unit and target unit for conversion. These details can then be used to perform the conversion.
+        """
+        thread = RoleThread()
+        router = Router(preference=["gpt-4-turbo"])
+
+        analyzer_msg = f"{conversion_analyzer_prompt} Here is the conversion requirement in plain English: {requirements}"
+        thread.post(role="user", msg=analyzer_msg)
+
+        response = router.chat(thread)
+        requirements_breakdown = json.loads(response.msg.text)
+
+        return {
+            "ingredient_name": requirements_breakdown["ingredient_name"],
+            "source_amount": requirements_breakdown["source_amount"],
+            "source_unit": requirements_breakdown["source_unit"],
+            "target_unit": requirements_breakdown["target_unit"],
+        }
+
+    @action
+    def convert_ingredient_amounts(self, requirements_breakdown: Dict[str, str]) -> None:
+        """Converts ingredient amount from one unit to another. It needs the conversion request to be in a structured format. Then, it can perform the conversion."""
+        params = {'apiKey': SPOONACULAR_API_KEY}
+        params['ingredientName'] = requirements_breakdown['ingredient_name']
+        params['sourceAmount'] = requirements_breakdown['source_amount']
+        params['sourceUnit'] = requirements_breakdown['source_unit']
+        params['targetUnit'] = requirements_breakdown['target_unit']
+
+        convert_amount_api_url = "https://api.spoonacular.com/recipes/convert"
+        response = requests.get(convert_amount_api_url, params=params)
+        if response.status_code != 200:
+            raise Exception("Error converting amounts on Spoonacular")
+        conversion = json.loads(response.text)
+        conversion_answer = conversion['answer']
+        return conversion_answer
+
+    @action
+    def get_substitute_requirements(self, requirements: str) -> Dict[str, Union[str, List[str]]]:
+        """
+        Transforms the user request to find ingredient substitutes from a plain English format to a structured format. It takes a text describing what the uer is trying to substitute and returns a structured breakdown that clarifies the ingredient name, which can then be used to search for substitutes.
+        """
+        thread = RoleThread()
+        router = Router(preference=["gpt-4-turbo"])
+
+        analyzer_msg = f"{substitution_analyzer_prompt} Here is the substitution requirement in plain English: {requirements}"
+        thread.post(role="user", msg=analyzer_msg)
+
+        response = router.chat(thread)
+        requirements_breakdown = json.loads(response.msg.text)
+
+        return {
+            "ingredient_name": requirements_breakdown["ingredient_name"],
+        }
+
+    @action
+    def get_ingredient_substitutes(self, requirements_breakdown: Dict[str, str]) -> None:
+        """Find substitutes for a given ingredient. It needs the substitution request to be in a structured format. Then, it can find the substitutes."""
+        params = {'apiKey': SPOONACULAR_API_KEY}
+        params['ingredientName'] = requirements_breakdown['ingredient_name']
+
+        substitute_api_url = "https://api.spoonacular.com/food/ingredients/substitutes"
+        response = requests.get(substitute_api_url, params=params)
+        if response.status_code != 200:
+            raise Exception("Error finding substitutes from Spoonacular")
+        conversion = json.loads(response.text)
+        if conversion['status'] == 'success':
+            conversion_answer = f"Substitutes for {params['ingredientName']}: "
+            conversion_answer += ", ".join(conversion['substitutes'])
         else:
-            raise ValueError(f"unkown click type {type}")
-        return
+            conversion_answer = f"Spoonacular did not return any substitutes for {params['ingredientName']}"
+        return conversion_answer
 
-    def _debug_image(
-        self,
-        img: Image.Image,
-        boxes: List[Box],
-        final_click: Optional[Tuple[int, int]] = None,
-    ) -> Image.Image:
-        """
-        Generates a debug image with bounding boxes and a final click marker.
+    @action
+    def result(self, value: str) -> str:
+        """Return a result to the user
 
         Args:
-            img (Image.Image): The image to draw the debug information on.
-            boxes (List[Box]): A list of bounding boxes to draw on the image.
-            final_click (Optional[Tuple[int, int]]): The coordinates of the final click, which will be marked with a red circle.
+            value (str): Value to return
 
         Returns:
-            Image.Image: The modified image with the debug information added.
+            str: Value returned
         """
-        draw = ImageDraw.Draw(img)
-        for box in boxes:
-            box.draw(draw)
-
-        if final_click:
-            draw.ellipse(
-                [
-                    final_click[0] - 5,
-                    final_click[1] - 5,
-                    final_click[0] + 5,
-                    final_click[1] + 5,
-                ],
-                fill="red",
-                outline="red",
-            )
-        return img
+        return value
