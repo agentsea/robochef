@@ -54,7 +54,7 @@ if __name__ == "__main__":
     host = os.getenv("SERVER_HOST", "0.0.0.0")
 
     uvicorn.run(
-        "surfpizza.server:app",
+        "robochef.server:app",
         host=host,
         port=int(port),
         reload=reload,
