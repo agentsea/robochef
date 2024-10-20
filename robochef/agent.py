@@ -111,7 +111,7 @@ class RoboChef(TaskAgent):
         return task
 
     @retry(
-        stop=stop_after_attempt(1),
+        stop=stop_after_attempt(5),
         before_sleep=before_sleep_log(logger, logging.INFO),
     )
     def take_action(
