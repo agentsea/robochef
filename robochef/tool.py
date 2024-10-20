@@ -190,13 +190,13 @@ class RoboChefTool(Tool):
         response = requests.get(substitute_api_url, params=params)
         if response.status_code != 200:
             raise Exception("Error finding substitutes from Spoonacular")
-        conversion = json.loads(response.text)
-        if conversion['status'] == 'success':
-            conversion_answer = f"Substitutes for {params['ingredientName']}: "
-            conversion_answer += ", ".join(conversion['substitutes'])
+        substitution = json.loads(response.text)
+        if substitution['status'] == 'success':
+            substitution_answer = f"Substitutes for {params['ingredientName']}: "
+            substitution_answer += ", ".join(substitution['substitutes'])
         else:
-            conversion_answer = f"Spoonacular did not return any substitutes for {params['ingredientName']}"
-        return conversion_answer
+            substitution_answer = f"Spoonacular did not return any substitutes for {params['ingredientName']}"
+        return substitution_answer
 
     @action
     def result(self, value: str) -> str:
