@@ -12,7 +12,7 @@ from surfkit.server.routes import task_router
 from .agent import Agent, router
 
 # Configure logging
-logger: Final = logging.getLogger("surfpizza")
+logger: Final = logging.getLogger("robochef")
 logger.setLevel(int(os.getenv("LOG_LEVEL", str(logging.DEBUG))))
 handler = logging.StreamHandler(sys.stdout)
 handler.setLevel(logging.INFO)

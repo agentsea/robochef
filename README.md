@@ -118,7 +118,7 @@ surfkit delete agent agent01
 
 ## Documentation
 
-See our [docs](https://docs.hub.agentsea.ai) for more information on how to use SurfPizza.
+See our [docs](https://docs.hub.agentsea.ai) for more information on RoboChef and our other AI agents.
 
 ## Community
 
