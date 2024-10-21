@@ -7,9 +7,9 @@ tags:
 supports:
   - "desktop"
 cmd: "poetry run python -m robochef.server"
-img_repo: "us-central1-docker.pkg.dev/agentsea-dev/guisurfer/surfpizza"
+img_repo: ""
 versions:
-  latest: "us-central1-docker.pkg.dev/agentsea-dev/guisurfer/surfpizza:latest"
+  latest: ""
 runtimes:
   - type: "agent"
     preference:
