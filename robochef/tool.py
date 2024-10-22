@@ -197,15 +197,3 @@ class RoboChefTool(Tool):
         else:
             substitution_answer = f"Spoonacular did not return any substitutes for {params['ingredientName']}"
         return substitution_answer
-
-    @action
-    def result(self, value: str) -> str:
-        """Return a result to the user
-
-        Args:
-            value (str): Value to return
-
-        Returns:
-            str: Value returned
-        """
-        return value

@@ -15,6 +15,7 @@ from surfkit.agent import TaskAgent
 from taskara import Task, TaskStatus
 from tenacity import before_sleep_log, retry, stop_after_attempt
 from threadmem import RoleMessage, RoleThread
+from toolfuse.util import AgentUtils
 
 from .tool import RoboChefTool, router
 
@@ -58,6 +59,9 @@ class RoboChef(TaskAgent):
 
         # Create an instance of the RoboChef tool
         robochef = RoboChefTool(task=task)
+
+        # Add standard agent utils to robochef
+        robochef.merge(AgentUtils())
 
         # Get the json schema for the tool
         tools = robochef.json_schema()
