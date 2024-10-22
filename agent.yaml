@@ -20,7 +20,7 @@ llm_providers:
   preference:
     - "gpt-4o"
 public: True
-icon: https://storage.googleapis.com/guisurfer-assets/SurfPizza.webp
+icon: https://storage.googleapis.com/guisurfer-assets/robochef-logo-1.png
 resource_requests:
   cpu: "1"
   memory: "2Gi"

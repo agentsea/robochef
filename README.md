@@ -7,7 +7,7 @@
 
   <h1 align="center">RoboChef</h1>
     <p align="center">
-    <img src="https://storage.googleapis.com/guisurfer-assets/SurfPizza.webp" alt="SurfPizza Logo" width="200" style="border-radius: 20px;">
+    <img src="https://storage.googleapis.com/guisurfer-assets/robochef-logo-1.png" alt="RoboChef Logo" width="200" style="border-radius: 20px;">
     </p>
   <p align="center">
     An AI agent that understands your requirements and does the following:
