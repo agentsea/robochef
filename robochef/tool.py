@@ -4,17 +4,17 @@ import json
 from typing import List, Dict, Union
 
 import requests
-from mllm import RoleThread, Router
 from PIL import Image
 from rich.console import Console
 from taskara import Task
 from toolfuse import Tool, action
 
+from langchain_openai import ChatOpenAI
+
 from .prompts import recipe_req_analyzer_prompt, \
                         conversion_analyzer_prompt, \
                         substitution_analyzer_prompt
 
-router = Router.from_env()
 console = Console()
 
 logger = logging.getLogger(__name__)
@@ -51,14 +51,11 @@ class RoboChefTool(Tool):
         """
         This is the first step in finding a recipe. It takes a text describing what type of recipe the user wants and returns a structured breakdown of user requirements. The structured breakdown clarifies the food, diet, intolerances, include_ingredients and exclude_ingredients that the user wants in the recipe. This breakdown can then be used to search for suitable recipes.
         """
-        thread = RoleThread()
-        router = Router(preference=["gpt-4-turbo"])
 
+        model = ChatOpenAI()
         analyzer_msg = f"{recipe_req_analyzer_prompt} Here is the user requirement in plain English: {requirements}"
-        thread.post(role="user", msg=analyzer_msg)
-
-        response = router.chat(thread)
-        requirements_breakdown = json.loads(response.msg.text)
+        response = model.invoke(analyzer_msg)
+        requirements_breakdown = json.loads(response.content)
 
         return {
             "food": requirements_breakdown["food"],
@@ -129,14 +126,11 @@ class RoboChefTool(Tool):
         """
         Transforms the user request to covert ingredients from one unit to another from a plain English format to a structured format. It takes a text describing what the uer is trying to convert and returns a structured breakdown that clarifies the ingredient name, source amount, source unit and target unit for conversion. These details can then be used to perform the conversion.
         """
-        thread = RoleThread()
-        router = Router(preference=["gpt-4-turbo"])
 
+        model = ChatOpenAI()
         analyzer_msg = f"{conversion_analyzer_prompt} Here is the conversion requirement in plain English: {requirements}"
-        thread.post(role="user", msg=analyzer_msg)
-
-        response = router.chat(thread)
-        requirements_breakdown = json.loads(response.msg.text)
+        response = model.invoke(analyzer_msg)
+        requirements_breakdown = json.loads(response.content)
 
         return {
             "ingredient_name": requirements_breakdown["ingredient_name"],
@@ -167,14 +161,11 @@ class RoboChefTool(Tool):
         """
         Transforms the user request to find ingredient substitutes from a plain English format to a structured format. It takes a text describing what the uer is trying to substitute and returns a structured breakdown that clarifies the ingredient name, which can then be used to search for substitutes.
         """
-        thread = RoleThread()
-        router = Router(preference=["gpt-4-turbo"])
 
+        model = ChatOpenAI()
         analyzer_msg = f"{substitution_analyzer_prompt} Here is the substitution requirement in plain English: {requirements}"
-        thread.post(role="user", msg=analyzer_msg)
-
-        response = router.chat(thread)
-        requirements_breakdown = json.loads(response.msg.text)
+        response = model.invoke(analyzer_msg)
+        requirements_breakdown = json.loads(response.content)
 
         return {
             "ingredient_name": requirements_breakdown["ingredient_name"],
