@@ -84,7 +84,19 @@ class RoboChef(TaskAgent):
             ]
         )
         # Create the model and LangChain chain
-        model = ChatOpenAI()
+        def flatten_action_schema(mjs):
+            # It looks like OpenAI's function calling handling of JSON Schema references has issues
+            # So I flattened the JSON Schema to remove the references
+            # Without this, action was being returned with name but without parameters
+            mjs["properties"]["action"]["properties"] = mjs["$defs"]["V1Action"]["properties"]
+            mjs["properties"]["action"]["required"] = mjs["$defs"]["V1Action"]["required"]
+            del mjs["$defs"]
+            return mjs
+
+        expected_response_schema = V1ActionSelection.model_json_schema()
+        expected_response_schema = flatten_action_schema(expected_response_schema)
+
+        model = ChatOpenAI().with_structured_output(expected_response_schema)
         chain = prompt | model
 
         # Initialize the thread messages exchanged with the LLM
@@ -172,11 +184,11 @@ class RoboChef(TaskAgent):
             )
 
             # Add the model's response to the conversation thread
-            messages.append(AIMessage(content=response.content))
+            messages.append(AIMessage(content=json.dumps(response)))
 
             try:
                 # Post to the user letting them know what the model selected
-                selection = json.loads(response.content)
+                selection = response
                 if not selection:
                     raise ValueError("No action selection parsed")
 
@@ -232,7 +244,6 @@ class RoboChef(TaskAgent):
                 tool=robocheftool.ref(),
                 result=action_response,
                 agent_id=self.name(),
-                model=response.response_metadata['model_name'],
             )
 
             new_state = action_response
